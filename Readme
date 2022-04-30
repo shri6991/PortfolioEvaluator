@@ -1,4 +1,4 @@
-Use main() in XirrCalculator.java. Change the following 
+Use main() in any IDE in XirrCalculator.java to run this utility. Change the following :
 - Summary and tx file paths 
 - Indexes for each necessary column like Scrip code, Scrip name and Date format according to your input file
 - Calculator should run automatically on the entire data provided the 2 files are present and formatted correctly
