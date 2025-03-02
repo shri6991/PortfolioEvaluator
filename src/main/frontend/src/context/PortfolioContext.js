@@ -480,6 +480,12 @@ export const PortfolioProvider = ({ children }) => {
   // Simulate getting current prices on a specific date (for non-ICICI portfolios)
   const simulateCurrentPrices = (holdings, dateStr = null) => {
     return holdings.map(holding => {
+      // Skip invalid holdings
+      if (!holding || typeof holding.quantity !== 'number') {
+        logger.warn('PortfolioContext', 'Invalid holding data:', holding);
+        return holding;
+      }
+
       // Generate a random multiplier for the current price, biased slightly upward
       const seed = holding.symbol.split('').reduce((acc, char) => acc + char.charCodeAt(0), 0);
       
@@ -493,17 +499,44 @@ export const PortfolioProvider = ({ children }) => {
         multiplier = 1 + ((seed % 20) / 100) + (Math.random() * 0.1); // 1.0-1.3x
       }
       
-      const currentPrice = holding.avgCostPrice * multiplier;
-      const currentValue = holding.quantity * currentPrice;
-      const unrealizedPL = currentValue - holding.valueAtCost;
-      const unrealizedPLPercent = holding.valueAtCost > 0 ? (unrealizedPL / holding.valueAtCost) * 100 : 0;
+      const currentPrice = holding.avgCostPrice ? holding.avgCostPrice * multiplier : 0;
+      
+      // Initialize values
+      let currentValue = 0;
+      let unrealizedPL = 0;
+      let unrealizedPLPercent = 0;
+      let totalPL = holding.realizedPL || 0;
+      let totalPLPercent = 0;
+      
+      // Calculate values based on holding status
+      if (holding.fullyExited) {
+        // For fully exited positions, only show realized P/L
+        currentValue = 0;
+        unrealizedPL = 0;
+        unrealizedPLPercent = 0;
+        // totalPL is already set to realizedPL
+      } else if (holding.quantity > 0) {
+        // For active positions, calculate both unrealized and total P/L
+        currentValue = holding.quantity * currentPrice;
+        unrealizedPL = currentValue - (holding.valueAtCost || 0);
+        unrealizedPLPercent = holding.valueAtCost > 0 ? (unrealizedPL / holding.valueAtCost) * 100 : 0;
+        totalPL = unrealizedPL + (holding.realizedPL || 0);
+      }
+      
+      // Calculate total P/L percent based on total invested amount
+      const totalInvested = (holding.totalBoughtValue || 0);
+      if (totalInvested > 0) {
+        totalPLPercent = (totalPL / totalInvested) * 100;
+      }
       
       return {
         ...holding,
         currentPrice,
         currentValue,
         unrealizedPL,
-        unrealizedPLPercent
+        unrealizedPLPercent,
+        totalPL,
+        totalPLPercent
       };
     });
   };
@@ -534,54 +567,72 @@ export const PortfolioProvider = ({ children }) => {
           symbol: symbol,
           name: transaction.companyName || symbol,
           quantity: 0,
-          totalCost: 0,
+          totalBought: 0,
+          totalBoughtValue: 0,
           totalSold: 0,
           totalSoldValue: 0,
-          realizedPL: 0
+          realizedPL: 0,
+          fullyExited: false,
+          lastTransactionDate: new Date(transaction.date).toISOString()
         };
       }
       
       const holding = holdingsMap[symbol];
       
+      // Update last transaction date if this transaction is more recent
+      const transactionDate = new Date(transaction.date);
+      const currentLastDate = new Date(holding.lastTransactionDate);
+      if (transactionDate > currentLastDate) {
+        holding.lastTransactionDate = transactionDate.toISOString();
+      }
+      
       if (action === 'buy') {
-        const newQuantity = holding.quantity + quantity;
-        const newTotalCost = holding.totalCost + value;
-        holding.avgCostPrice = newTotalCost / newQuantity;
-        holding.quantity = newQuantity;
-        holding.totalCost = newTotalCost;
+        holding.totalBought += quantity;
+        holding.totalBoughtValue += value;
+        holding.quantity += quantity;
+        holding.avgCostPrice = holding.totalBoughtValue / holding.totalBought;
+        holding.fullyExited = false;
       } else if (action === 'sell') {
         holding.quantity -= quantity;
         holding.totalSold += quantity;
         holding.totalSoldValue += value;
         
-        // Calculate realized P/L for this sale
+        // Calculate realized P/L for this sale using FIFO method
         const costBasis = quantity * holding.avgCostPrice;
         const saleValue = value;
         const realizedPL = saleValue - costBasis;
         holding.realizedPL += realizedPL;
         
-        // Adjust total cost for remaining shares
-        if (holding.quantity > 0) {
-          holding.totalCost = holding.avgCostPrice * holding.quantity;
-        } else {
-          holding.totalCost = 0;
-          holding.avgCostPrice = 0;
+        if (holding.quantity <= 0) {
+          holding.quantity = 0;
+          holding.fullyExited = true;
         }
       }
     });
     
-    // Convert map to array and filter out positions with zero quantity
+    // Convert map to array and calculate final metrics
     return Object.values(holdingsMap)
-      .filter(holding => holding.quantity > 0)
-      .map(holding => ({
-        symbol: holding.symbol,
-        name: holding.name,
-        quantity: holding.quantity,
-        avgCostPrice: holding.avgCostPrice,
-        valueAtCost: holding.quantity * holding.avgCostPrice,
-        realizedPL: holding.realizedPL,
-        sector: assignSector(holding.symbol, holding.name)
-      }));
+      .map(holding => {
+        const valueAtCost = holding.quantity * holding.avgCostPrice;
+        const totalInvested = holding.totalBoughtValue;
+        const totalReturned = holding.totalSoldValue;
+        
+        return {
+          symbol: holding.symbol,
+          name: holding.name,
+          quantity: holding.quantity,
+          avgCostPrice: holding.avgCostPrice,
+          valueAtCost: valueAtCost,
+          realizedPL: holding.realizedPL,
+          totalBought: holding.totalBought,
+          totalBoughtValue: holding.totalBoughtValue,
+          totalSold: holding.totalSold,
+          totalSoldValue: holding.totalSoldValue,
+          sector: assignSector(holding.symbol, holding.name),
+          fullyExited: holding.fullyExited,
+          lastTransactionDate: holding.lastTransactionDate
+        };
+      });
   };
   
   // Helper function to calculate performance metrics

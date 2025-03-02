@@ -1,9 +1,11 @@
-import React, { useState, useEffect, useContext } from 'react';
+import React, { useState, useEffect, useContext, useRef } from 'react';
 import { Container, Row, Col, Card, Table, Badge, Alert, Spinner, Nav, Tab, ButtonGroup, Button, Tabs } from 'react-bootstrap';
 import { useNavigate, useParams } from 'react-router-dom';
 import { usePortfolio } from '../context/PortfolioContext';
 import { Line, Pie, Bar } from 'react-chartjs-2';
 import { Chart as ChartJS, CategoryScale, LinearScale, PointElement, LineElement, Title, Tooltip, Legend, ArcElement, BarElement } from 'chart.js';
+import 'chart.js/auto'; // Import Chart.js auto to include all necessary components
+import { format } from 'date-fns';
 import logger from '../services/LoggerService';
 import breezeService from '../services/BreezeService';
 import xirrService from '../services/XirrService';
@@ -80,6 +82,22 @@ const PortfolioDetail = () => {
   const [securitiesXirr, setSecuritiesXirr] = useState({});
   const [isCalculatingXirr, setIsCalculatingXirr] = useState(false);
   const [xirrError, setXirrError] = useState('');
+  
+  // Add refs for charts
+  const lineChartRef = useRef(null);
+  const pieChartRef = useRef(null);
+  const barChartRef = useRef(null);
+  const historyChartRef = useRef(null);
+  
+  // Debug logging for Chart.js registered scales
+  useEffect(() => {
+    logger.info('PortfolioDetail', 'Registered Chart.js scales:', {
+      scales: Object.keys(ChartJS.defaults.scales || {})
+    });
+    logger.info('PortfolioDetail', 'Chart.js version:', {
+      version: ChartJS.version
+    });
+  }, []);
 
   useEffect(() => {
     if (id) {
@@ -95,11 +113,27 @@ const PortfolioDetail = () => {
       calculateXirrValues();
     }
   }, [portfolio, timeRange]);
+  
+  // Cleanup chart instances when component unmounts or when tab changes
+  useEffect(() => {
+    return () => {
+      logger.info('PortfolioDetail', 'Cleaning up chart instances');
+      // Destroy all chart instances
+      const charts = [lineChartRef, pieChartRef, barChartRef, historyChartRef];
+      charts.forEach(chartRef => {
+        if (chartRef.current && chartRef.current.chartInstance) {
+          logger.info('PortfolioDetail', 'Destroying chart instance');
+          chartRef.current.chartInstance.destroy();
+        }
+      });
+    };
+  }, [selectedTab]);
 
   // Function to load historical prices based on time range
   const loadHistoricalPrices = async (range) => {
-    if (!portfolio || !portfolio.holdings || portfolio.holdings.length === 0) {
-      logger.warn('PortfolioDetail', 'No portfolio or holdings available');
+    if (!portfolio || !portfolio.transactions || portfolio.transactions.length === 0) {
+      logger.warn('PortfolioDetail', 'No portfolio or transactions available');
+      setPerformanceData([]);
       return;
     }
     
@@ -109,103 +143,189 @@ const PortfolioDetail = () => {
     
     try {
       const { startDate, endDate } = getDateRangeForTimeRange(range);
-      
       logger.debug('PortfolioDetail', 'Date range calculated', { startDate, endDate });
       
-      // If using ICICI Direct, use real historical prices
-      if (portfolio.broker === 'ICICI' && breezeService.isReady()) {
-        logger.info('PortfolioDetail', 'Using Breeze API for historical prices');
+      // Use a simplified approach: Create a transaction map for price lookup
+      const priceMap = {};
+      
+      // Sort transactions by date (ascending)
+      const sortedTransactions = [...portfolio.transactions]
+        .filter(tx => tx && tx.date && tx.symbol && tx.price)
+        .sort((a, b) => new Date(a.date) - new Date(b.date));
+      
+      logger.debug('PortfolioDetail', `Processing ${sortedTransactions.length} transactions for price map`);
+      
+      // Record the last known price for each symbol on each date
+      sortedTransactions.forEach(tx => {
+        const symbol = tx.symbol;
+        const dateStr = new Date(tx.date).toISOString().split('T')[0];
+        const price = parseFloat(tx.price);
         
-        // Get historical prices for each stock in the portfolio
-        const historicalPricesMap = {};
+        if (!isNaN(price) && price > 0) {
+          if (!priceMap[symbol]) {
+            priceMap[symbol] = {};
+          }
+          priceMap[symbol][dateStr] = price;
+        }
+      });
+      
+      // Generate a list of dates between startDate and endDate
+      const dates = [];
+      const current = new Date(startDate);
+      const end = new Date(endDate);
+      
+      // Limit to 1 year maximum to prevent performance issues
+      const oneYearAgo = new Date(end);
+      oneYearAgo.setFullYear(oneYearAgo.getFullYear() - 1);
+      
+      if (current < oneYearAgo) {
+        logger.info('PortfolioDetail', 'Limiting date range to 1 year');
+        current.setTime(oneYearAgo.getTime());
+      }
+      
+      // Generate dates (maximum 100 data points)
+      const totalDays = Math.ceil((end - current) / (86400000)); // milliseconds in a day
+      const skipDays = Math.max(1, Math.floor(totalDays / 100));
+      
+      logger.debug('PortfolioDetail', `Generating dates with skipDays=${skipDays} for total days=${totalDays}`);
+      
+      let dayCounter = 0;
+      while (current <= end) {
+        if (dayCounter % skipDays === 0) {
+          dates.push(new Date(current));
+        }
+        current.setDate(current.getDate() + 1);
+        dayCounter++;
+      }
+      
+      // Ensure we include the end date
+      if (dates.length === 0 || dates[dates.length - 1] < end) {
+        dates.push(new Date(end));
+      }
+      
+      logger.info('PortfolioDetail', `Generated ${dates.length} dates for historical data`);
+      
+      // Calculate holdings and portfolio value for each date
+      const performanceData = [];
+      
+      for (const date of dates) {
+        const dateStr = date.toISOString().split('T')[0];
+        // Use simple locale string format for consistent display
+        const formattedDate = format(date, 'MMM d, yyyy');
         
-        for (const holding of portfolio.holdings) {
-          try {
-            logger.debug('PortfolioDetail', `Fetching historical prices for ${holding.symbol}`);
-            const prices = await breezeService.getHistoricalPrices(
-              holding.symbol, 
-              startDate.toISOString().split('T')[0], 
-              endDate.toISOString().split('T')[0]
-            );
-            historicalPricesMap[holding.symbol] = prices;
-          } catch (error) {
-            logger.error('PortfolioDetail', `Error fetching historical prices for ${holding.symbol}`, error);
+        // Calculate portfolio value on this date
+        let portfolioValue = 0;
+        
+        // Track holdings for each symbol as of this date
+        const holdingsAsOfDate = {};
+        
+        // Process all transactions up to this date to determine holdings
+        for (const tx of sortedTransactions) {
+          const txDate = new Date(tx.date);
+          
+          if (txDate > date) {
+            // Skip transactions after this date
+            continue;
+          }
+          
+          const symbol = tx.symbol;
+          const isBuy = (tx.action || '').toUpperCase() === 'BUY';
+          const quantity = parseFloat(tx.quantity) || 0;
+          
+          if (!holdingsAsOfDate[symbol]) {
+            holdingsAsOfDate[symbol] = 0;
+          }
+          
+          if (isBuy) {
+            holdingsAsOfDate[symbol] += quantity;
+          } else {
+            holdingsAsOfDate[symbol] -= quantity;
           }
         }
         
-        // Calculate daily values based on real historical prices
-        const dailyValues = calculateDailyPortfolioValuesWithHistoricalPrices(
-          portfolio,
-          historicalPricesMap,
-          startDate,
-          endDate
-        );
+        // Log for debugging
+        if (dates.indexOf(date) === 0 || dates.indexOf(date) === dates.length - 1) {
+          logger.debug('PortfolioDetail', `Holdings as of ${formattedDate}:`, holdingsAsOfDate);
+        }
         
-        logger.info('PortfolioDetail', `Generated ${dailyValues.length} daily performance data points`);
-        setPerformanceData(dailyValues);
-      } else {
-        // Fall back to simulated historical prices
-        logger.info('PortfolioDetail', 'Using simulated historical prices');
-        const dailyValues = calculateDailyPortfolioValues(portfolio, startDate, endDate);
-        setPerformanceData(dailyValues);
+        // Calculate value for each holding using last known price
+        Object.keys(holdingsAsOfDate).forEach(symbol => {
+          const quantity = holdingsAsOfDate[symbol];
+          
+          if (quantity <= 0) {
+            return; // Skip if not holding any shares
+          }
+          
+          // Find the most recent price for this symbol on or before this date
+          let price = null;
+          
+          if (priceMap[symbol]) {
+            // Find the latest date in the price map that's on or before current date
+            const availableDates = Object.keys(priceMap[symbol])
+              .filter(d => d <= dateStr)
+              .sort();
+            
+            if (availableDates.length > 0) {
+              const latestDate = availableDates[availableDates.length - 1];
+              price = priceMap[symbol][latestDate];
+            }
+          }
+          
+          // If no historical price found, try using current price from holdings
+          if (!price || price <= 0) {
+            const holding = portfolio.holdings.find(h => h.symbol === symbol);
+            if (holding) {
+              price = holding.avgCostPrice || holding.currentPrice;
+            }
+          }
+          
+          // Add to portfolio value if we have a valid price
+          if (price && price > 0 && quantity > 0) {
+            const holdingValue = quantity * price;
+            
+            // Safety check - ignore unrealistically large values
+            if (holdingValue < 1e10) { // 10 billion limit
+              portfolioValue += holdingValue;
+            } else {
+              logger.warn('PortfolioDetail', `Ignoring suspicious holding value for ${symbol}:`, {
+                quantity,
+                price,
+                value: holdingValue
+              });
+            }
+          }
+        });
+        
+        // Log extreme values for debugging
+        if (portfolioValue > 1e9) { // log if over 1 billion
+          logger.warn('PortfolioDetail', `Very high portfolio value on ${formattedDate}:`, {
+            value: portfolioValue
+          });
+        }
+        
+        // Only add points with valid values
+        if (portfolioValue > 0 && portfolioValue < 1e10) { // Cap at 10 billion
+          performanceData.push({
+            date: formattedDate,
+            value: portfolioValue
+          });
+        }
       }
+      
+      logger.info('PortfolioDetail', `Generated ${performanceData.length} performance data points`);
+      logger.debug('PortfolioDetail', 'Sample data points:', {
+        first: performanceData.length > 0 ? performanceData[0] : null,
+        last: performanceData.length > 0 ? performanceData[performanceData.length - 1] : null
+      });
+      
+      setPerformanceData(performanceData);
     } catch (error) {
       logger.error('PortfolioDetail', 'Error loading historical prices', error);
       setHistoricalPriceError(`Failed to load historical prices: ${error.message}`);
+      setPerformanceData([]);
     } finally {
       setIsLoadingHistoricalData(false);
     }
-  };
-
-  // Calculate portfolio values using historical price data from Breeze
-  const calculateDailyPortfolioValuesWithHistoricalPrices = (portfolio, historicalPricesMap, startDate, endDate) => {
-    logger.debug('PortfolioDetail', 'Calculating daily portfolio values with historical prices');
-    
-    const dailyValues = [];
-    const currentDate = new Date(startDate);
-    
-    while (currentDate <= endDate) {
-      const dateStr = currentDate.toISOString().split('T')[0];
-      
-      // Calculate portfolio value for this date
-      let portfolioValue = 0;
-      
-      for (const holding of portfolio.holdings) {
-        // Get historical price for this stock on this date
-        const historicalPrices = historicalPricesMap[holding.symbol] || {};
-        const price = historicalPrices[dateStr];
-        
-        if (price) {
-          portfolioValue += holding.quantity * price;
-        } else {
-          // If no price available for this date, use the most recent price
-          const availableDates = Object.keys(historicalPrices || {})
-            .filter(date => date <= dateStr)
-            .sort();
-          
-          const mostRecentDate = availableDates[availableDates.length - 1];
-          const mostRecentPrice = mostRecentDate ? historicalPrices[mostRecentDate] : null;
-          
-          if (mostRecentPrice) {
-            portfolioValue += holding.quantity * mostRecentPrice;
-          } else {
-            // Fallback to current price if no historical price available
-            portfolioValue += holding.quantity * (holding.currentPrice || holding.avgCostPrice);
-          }
-        }
-      }
-      
-      // Add data point
-      dailyValues.push({
-        date: dateStr,
-        value: portfolioValue
-      });
-      
-      // Move to next day
-      currentDate.setDate(currentDate.getDate() + 1);
-    }
-    
-    return dailyValues;
   };
 
   // Get start and end dates based on time range
@@ -244,63 +364,6 @@ const PortfolioDetail = () => {
     }
     
     return { startDate, endDate };
-  };
-
-  // Calculate daily portfolio values using historical prices
-  const calculateDailyPortfolioValues = async (historicalPriceData, startDate, endDate) => {
-    if (!portfolio || !portfolio.transactions || portfolio.transactions.length === 0) {
-      return;
-    }
-    
-    const priceData = historicalPriceData || historicalPrices;
-    
-    // Sort transactions by date (oldest first)
-    const sortedTransactions = [...portfolio.transactions]
-      .filter(t => t && t.date)
-      .sort((a, b) => new Date(a.date) - new Date(b.date));
-    
-    if (sortedTransactions.length === 0) return;
-    
-    const dates = [];
-    const marketValues = [];
-    const investedValues = [];
-    
-    // Loop through each day in the range
-    const currentDate = new Date(startDate);
-    const end = new Date(endDate);
-    
-    while (currentDate <= end) {
-      const dateStr = currentDate.toISOString().split('T')[0];
-      dates.push(dateStr);
-      
-      try {
-        // Use the portfolio context function to calculate portfolio value on this date
-        const { portfolioValue, investedValue } = await calculatePortfolioValueOnDate(dateStr, sortedTransactions);
-        
-        marketValues.push(portfolioValue);
-        investedValues.push(investedValue);
-      } catch (error) {
-        console.error(`Error calculating portfolio value for ${dateStr}:`, error);
-        // If there's an error, push the last known values or zeros
-        marketValues.push(marketValues.length > 0 ? marketValues[marketValues.length - 1] : 0);
-        investedValues.push(investedValues.length > 0 ? investedValues[investedValues.length - 1] : 0);
-      }
-      
-      // Move to next day
-      currentDate.setDate(currentDate.getDate() + 1);
-    }
-    
-    // Format dates for display
-    const formattedDates = dates.map(date => {
-      const d = new Date(date);
-      return d.toLocaleDateString();
-    });
-    
-    setPerformanceData({
-      labels: formattedDates,
-      marketValues: marketValues,
-      investedValues: investedValues
-    });
   };
 
   // Function to calculate XIRR values for portfolio and securities
@@ -483,19 +546,54 @@ const PortfolioDetail = () => {
   // Prepare data for charts
   const preparePerformanceChartData = () => {
     if (!performanceData || !Array.isArray(performanceData) || performanceData.length === 0) {
+      logger.warn('PortfolioDetail', 'No performance data available for chart');
       return null;
     }
 
+    // Sort data points by date
+    const sortedData = [...performanceData].sort((a, b) => {
+      return new Date(a.date) - new Date(b.date);
+    });
+
+    // Filter out any invalid data points
+    const validData = sortedData.filter(point => 
+      point && 
+      point.date && 
+      typeof point.value === 'number' && 
+      !isNaN(point.value) && 
+      point.value > 0
+    );
+
+    if (validData.length === 0) {
+      logger.warn('PortfolioDetail', 'No valid data points after filtering');
+      return null;
+    }
+    
+    logger.info('PortfolioDetail', `Prepared ${validData.length} valid data points for chart`);
+    logger.debug('PortfolioDetail', 'Data range:', {
+      first: validData[0],
+      last: validData[validData.length - 1]
+    });
+
+    // Limit to maximum 100 data points to improve performance
+    let dataToUse = validData;
+    if (validData.length > 100) {
+      const skipPoints = Math.floor(validData.length / 100);
+      dataToUse = validData.filter((_, index) => index % skipPoints === 0 || index === validData.length - 1);
+    }
+
     return {
-      labels: performanceData.map(dataPoint => dataPoint.date),
+      labels: dataToUse.map(point => point.date), // Use string dates instead of Date objects
       datasets: [
         {
           label: 'Portfolio Value',
-          data: performanceData.map(dataPoint => dataPoint.value),
+          data: dataToUse.map(point => point.value),
           borderColor: 'rgba(75, 192, 192, 1)',
-          backgroundColor: 'rgba(75, 192, 192, 0.2)',
+          backgroundColor: 'rgba(75, 192, 192, 0.1)',
           tension: 0.1,
-          fill: true
+          fill: true,
+          pointRadius: 0,
+          borderWidth: 2
         }
       ]
     };
@@ -625,18 +723,45 @@ const PortfolioDetail = () => {
       tooltip: {
         callbacks: {
           label: function(context) {
-            let label = context.dataset.label || '';
-            if (label) {
-              label += ': ';
+            if (context && context.raw) {
+              try {
+                return `Value: ₹${context.raw.toLocaleString('en-IN', { maximumFractionDigits: 2 })}`;
+              } catch (error) {
+                logger.error('PortfolioDetail', 'Error formatting tooltip value', error);
+                return `Value: ₹${context.raw}`;
+              }
             }
-            if (context.parsed.y !== null) {
-              label += '₹' + context.parsed.y.toLocaleString('en-IN', { maximumFractionDigits: 2 });
-            }
-            return label;
+            return '';
           }
         }
       }
     },
+    scales: {
+      y: {
+        beginAtZero: false,
+        grace: '5%',
+        suggestedMax: (safePortfolio.totalValue || 0) * 1.2, // 20% higher than current value
+        ticks: {
+          callback: function(value) {
+            if (value == null || value === undefined) return '';
+            try {
+              return '₹' + value.toLocaleString('en-IN', {
+                maximumFractionDigits: 0
+              });
+            } catch (error) {
+              logger.error('PortfolioDetail', 'Error formatting y-axis tick', error);
+              return '₹' + value;
+            }
+          }
+        }
+      },
+      x: {
+        type: 'category', // Use category scale for string labels
+        ticks: {
+          maxTicksLimit: 10
+        }
+      }
+    }
   };
 
   const pieChartOptions = {
@@ -656,8 +781,17 @@ const PortfolioDetail = () => {
     }
     
     return safePortfolio.holdings
-      .filter(holding => holding && typeof holding.currentValue === 'number')
-      .sort((a, b) => (b.currentValue || 0) - (a.currentValue || 0));
+      .filter(holding => holding && (typeof holding.currentValue === 'number' || holding.fullyExited))
+      .sort((a, b) => {
+        // Sort by fully exited first (exited holdings at bottom)
+        if (a.fullyExited && !b.fullyExited) return 1;
+        if (!a.fullyExited && b.fullyExited) return -1;
+        
+        // Then sort by market value (for active holdings) or realized PL (for exited holdings)
+        const aValue = a.fullyExited ? a.realizedPL || 0 : a.currentValue || 0;
+        const bValue = b.fullyExited ? b.realizedPL || 0 : b.currentValue || 0;
+        return bValue - aValue;
+      });
   };
 
   // Helper function to safely render transactions
@@ -684,7 +818,7 @@ const PortfolioDetail = () => {
 
   // Handle time range change
   const handleTimeRangeChange = (range) => {
-    logger.info('PortfolioDetail', `Time range changed to: ${range}`);
+    logger.info('PortfolioDetail', `Time range changed from ${timeRange} to ${range}`);
     setTimeRange(range);
   };
 
@@ -771,6 +905,16 @@ const PortfolioDetail = () => {
     return null;
   };
 
+  // Log whenever the chart is about to render
+  useEffect(() => {
+    if (performanceData && performanceData.length > 0) {
+      logger.info('PortfolioDetail', 'Performance chart about to render with data', {
+        count: performanceData.length,
+        timeRange
+      });
+    }
+  }, [performanceData, timeRange]);
+
   return (
     <Container className="py-4">
       <div className="d-flex justify-content-between align-items-center mb-4">
@@ -809,7 +953,10 @@ const PortfolioDetail = () => {
       
       <Tabs
         activeKey={selectedTab}
-        onSelect={(k) => setSelectedTab(k)}
+        onSelect={(k) => {
+          logger.info('PortfolioDetail', `Tab changed from ${selectedTab} to ${k}`);
+          setSelectedTab(k);
+        }}
         className="mb-4"
       >
         <Tab eventKey="overview" title="Overview">
@@ -824,7 +971,10 @@ const PortfolioDetail = () => {
                         <Button
                           key={range}
                           variant={timeRange === range ? 'primary' : 'outline-secondary'}
-                          onClick={() => handleTimeRangeChange(range)}
+                          onClick={() => {
+                            logger.info('PortfolioDetail', `Time range changed from ${timeRange} to ${range}`);
+                            handleTimeRangeChange(range);
+                          }}
                           size="sm"
                         >
                           {range}
@@ -840,45 +990,21 @@ const PortfolioDetail = () => {
                       </Spinner>
                     </div>
                   ) : performanceData && Array.isArray(performanceData) && performanceData.length > 0 ? (
-                    <Line
-                      data={{
-                        labels: performanceData.map(dataPoint => dataPoint.date),
-                        datasets: [
-                          {
-                            label: 'Portfolio Value',
-                            data: performanceData.map(dataPoint => dataPoint.value),
-                            borderColor: 'rgba(75, 192, 192, 1)',
-                            backgroundColor: 'rgba(75, 192, 192, 0.2)',
-                            tension: 0.1,
-                            fill: true
-                          }
-                        ]
-                      }}
-                      options={{
-                        responsive: true,
-                        maintainAspectRatio: false,
-                        plugins: {
-                          legend: {
-                            display: false
-                          },
-                          tooltip: {
-                            callbacks: {
-                              label: function(context) {
-                                return `Value: $${context.raw.toFixed(2)}`;
-                              }
-                            }
-                          }
-                        },
-                        scales: {
-                          x: {
-                            ticks: {
-                              maxTicksLimit: 8
-                            }
-                          }
-                        }
-                      }}
-                      height={300}
-                    />
+                    <div style={{ height: '300px', maxHeight: '300px' }}>
+                      {performanceChartData ? (
+                        <Line
+                          data={performanceChartData}
+                          options={chartOptions}
+                          height={300}
+                          ref={lineChartRef}
+                          key={`line-${selectedTab}-${timeRange}`}
+                        />
+                      ) : (
+                        <div className="text-center py-4">
+                          <p className="text-muted">Could not prepare chart data.</p>
+                        </div>
+                      )}
+                    </div>
                   ) : (
                     <div className="text-center py-4">
                       <p className="text-muted">No performance data available for the selected time range.</p>
@@ -941,8 +1067,13 @@ const PortfolioDetail = () => {
                 <Card.Body>
                   <Card.Title>Sector Allocation</Card.Title>
                   {sectorAllocationData ? (
-                    <div style={{ height: '300px' }}>
-                      <Pie data={sectorAllocationData} options={pieChartOptions} />
+                    <div style={{ height: '300px', maxHeight: '300px' }}>
+                      <Pie 
+                        data={sectorAllocationData} 
+                        options={pieChartOptions} 
+                        ref={pieChartRef}
+                        key={`pie-${selectedTab}`}
+                      />
                     </div>
                   ) : (
                     <Alert variant="info">
@@ -958,8 +1089,13 @@ const PortfolioDetail = () => {
                 <Card.Body>
                   <Card.Title>Top Holdings</Card.Title>
                   {holdingsChartData ? (
-                    <div style={{ height: '300px' }}>
-                      <Bar data={holdingsChartData} options={chartOptions} />
+                    <div style={{ height: '300px', maxHeight: '300px' }}>
+                      <Bar 
+                        data={holdingsChartData} 
+                        options={{...chartOptions, scales: {...chartOptions.scales, x: {type: 'category'}}}}
+                        ref={barChartRef}
+                        key={`bar-${selectedTab}`}
+                      />
                     </div>
                   ) : (
                     <Alert variant="info">
@@ -988,6 +1124,8 @@ const PortfolioDetail = () => {
                           <th>Market Value</th>
                           <th>Gain/Loss</th>
                           <th>Gain/Loss %</th>
+                          <th>Realized P/L</th>
+                          <th>Total P/L</th>
                           <th>XIRR</th>
                         </tr>
                       </thead>
@@ -995,10 +1133,10 @@ const PortfolioDetail = () => {
                         {getSafeHoldings()
                           .slice(0, 5)
                           .map((holding, index) => (
-                            <tr key={index}>
+                            <tr key={index} className={holding.fullyExited ? 'table-secondary' : ''}>
                               <td>{holding.symbol || 'Unknown'}</td>
                               <td>{holding.companyName || holding.symbol || 'Unknown'}</td>
-                              <td>{holding.quantity || 0}</td>
+                              <td>{holding.quantity || 0}{holding.fullyExited && ' (Sold)'}</td>
                               <td>₹{(holding.avgCostPrice || 0).toFixed(2)}</td>
                               <td>₹{(holding.currentPrice || 0).toFixed(2)}</td>
                               <td>₹{(holding.currentValue || 0).toLocaleString('en-IN', { maximumFractionDigits: 2 })}</td>
@@ -1007,6 +1145,14 @@ const PortfolioDetail = () => {
                               </td>
                               <td className={(holding.unrealizedPLPercent || 0) >= 0 ? 'text-success' : 'text-danger'}>
                                 {(holding.unrealizedPLPercent || 0).toFixed(2)}%
+                              </td>
+                              <td className={(holding.realizedPL || 0) >= 0 ? 'text-success' : 'text-danger'}>
+                                ₹{(holding.realizedPL || 0).toLocaleString('en-IN', { maximumFractionDigits: 2 })}
+                              </td>
+                              <td className={(holding.totalPL || 0) >= 0 ? 'text-success' : 'text-danger'}>
+                                ₹{(holding.totalPL || 0).toLocaleString('en-IN', { maximumFractionDigits: 2 })}
+                                {' '}
+                                ({(holding.totalPLPercent || 0).toFixed(2)}%)
                               </td>
                               <td className={securitiesXirr[holding.symbol] >= 0 ? 'text-success' : 'text-danger'}>
                                 {isCalculatingXirr ? (
@@ -1042,16 +1188,18 @@ const PortfolioDetail = () => {
                       <th>Market Value</th>
                       <th>Gain/Loss</th>
                       <th>Gain/Loss %</th>
+                      <th>Realized P/L</th>
+                      <th>Total P/L</th>
                       <th>XIRR</th>
                     </tr>
                   </thead>
                   <tbody>
                     {getSafeHoldings()
                       .map((holding, index) => (
-                        <tr key={index}>
+                        <tr key={index} className={holding.fullyExited ? 'table-secondary' : ''}>
                           <td>{holding.symbol || 'Unknown'}</td>
                           <td>{holding.companyName || holding.symbol || 'Unknown'}</td>
-                          <td>{holding.quantity || 0}</td>
+                          <td>{holding.quantity || 0}{holding.fullyExited && ' (Sold)'}</td>
                           <td>₹{(holding.avgCostPrice || 0).toFixed(2)}</td>
                           <td>₹{(holding.currentPrice || 0).toFixed(2)}</td>
                           <td>₹{(holding.costBasis || 0).toLocaleString('en-IN', { maximumFractionDigits: 2 })}</td>
@@ -1061,6 +1209,14 @@ const PortfolioDetail = () => {
                           </td>
                           <td className={(holding.unrealizedPLPercent || 0) >= 0 ? 'text-success' : 'text-danger'}>
                             {(holding.unrealizedPLPercent || 0).toFixed(2)}%
+                          </td>
+                          <td className={(holding.realizedPL || 0) >= 0 ? 'text-success' : 'text-danger'}>
+                            ₹{(holding.realizedPL || 0).toLocaleString('en-IN', { maximumFractionDigits: 2 })}
+                          </td>
+                          <td className={(holding.totalPL || 0) >= 0 ? 'text-success' : 'text-danger'}>
+                            ₹{(holding.totalPL || 0).toLocaleString('en-IN', { maximumFractionDigits: 2 })}
+                            {' '}
+                            ({(holding.totalPLPercent || 0).toFixed(2)}%)
                           </td>
                           <td className={securitiesXirr[holding.symbol] >= 0 ? 'text-success' : 'text-danger'}>
                             {isCalculatingXirr ? (
@@ -1124,8 +1280,13 @@ const PortfolioDetail = () => {
                 <Card.Body>
                   <Card.Title>Transaction Types</Card.Title>
                   {historyChartData ? (
-                    <div style={{ height: '300px' }}>
-                      <Bar data={historyChartData} options={chartOptions} />
+                    <div style={{ height: '300px', maxHeight: '300px' }}>
+                      <Bar 
+                        data={historyChartData} 
+                        options={{...chartOptions, scales: {...chartOptions.scales, x: {type: 'category'}}}}
+                        ref={historyChartRef}
+                        key={`history-${selectedTab}`}
+                      />
                     </div>
                   ) : (
                     <Alert variant="info">
