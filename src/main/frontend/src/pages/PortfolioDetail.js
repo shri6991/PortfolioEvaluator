@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useContext, useRef } from 'react';
+import React, { useState, useEffect, useContext, useRef, useCallback } from 'react';
 import { Container, Row, Col, Card, Table, Badge, Alert, Spinner, Nav, Tab, ButtonGroup, Button, Tabs } from 'react-bootstrap';
 import { useNavigate, useParams } from 'react-router-dom';
 import { usePortfolio } from '../context/PortfolioContext';
@@ -89,48 +89,46 @@ const PortfolioDetail = () => {
   const barChartRef = useRef(null);
   const historyChartRef = useRef(null);
   
-  // Debug logging for Chart.js registered scales
-  useEffect(() => {
-    logger.info('PortfolioDetail', 'Registered Chart.js scales:', {
-      scales: Object.keys(ChartJS.defaults.scales || {})
-    });
-    logger.info('PortfolioDetail', 'Chart.js version:', {
-      version: ChartJS.version
-    });
-  }, []);
-
-  useEffect(() => {
-    if (id) {
-      logger.info('PortfolioDetail', `Loading portfolio with ID: ${id}`);
-      getPortfolioById(id);
+  // Get start and end dates based on time range
+  const getDateRangeForTimeRange = useCallback((range) => {
+    const endDate = new Date();
+    let startDate = new Date();
+    
+    // If portfolio has transactions, use the earliest transaction date as the start date for MAX
+    const sortedTransactions = portfolio && portfolio.transactions && Array.isArray(portfolio.transactions) && portfolio.transactions.length > 0
+      ? [...portfolio.transactions]
+          .filter(t => t && t.date)
+          .sort((a, b) => new Date(a.date) - new Date(b.date))
+      : [];
+      
+    const earliestTransactionDate = sortedTransactions.length > 0 
+      ? new Date(sortedTransactions[0].date)
+      : new Date();
+    
+    switch (range) {
+      case '1D':
+        startDate.setDate(startDate.getDate() - 1);
+        break;
+      case '1W':
+        startDate.setDate(startDate.getDate() - 7);
+        break;
+      case '1M':
+        startDate.setMonth(startDate.getMonth() - 1);
+        break;
+      case '1Y':
+        startDate.setFullYear(startDate.getFullYear() - 1);
+        break;
+      case 'MAX':
+      default:
+        startDate = new Date(earliestTransactionDate);
+        break;
     }
-  }, [id, getPortfolioById]);
-
-  useEffect(() => {
-    if (portfolio) {
-      logger.info('PortfolioDetail', 'Portfolio loaded, loading historical prices');
-      loadHistoricalPrices(timeRange);
-      calculateXirrValues();
-    }
-  }, [portfolio, timeRange]);
-  
-  // Cleanup chart instances when component unmounts or when tab changes
-  useEffect(() => {
-    return () => {
-      logger.info('PortfolioDetail', 'Cleaning up chart instances');
-      // Destroy all chart instances
-      const charts = [lineChartRef, pieChartRef, barChartRef, historyChartRef];
-      charts.forEach(chartRef => {
-        if (chartRef.current && chartRef.current.chartInstance) {
-          logger.info('PortfolioDetail', 'Destroying chart instance');
-          chartRef.current.chartInstance.destroy();
-        }
-      });
-    };
-  }, [selectedTab]);
+    
+    return { startDate, endDate };
+  }, [portfolio]);
 
   // Function to load historical prices based on time range
-  const loadHistoricalPrices = async (range) => {
+  const loadHistoricalPrices = useCallback(async (range) => {
     if (!portfolio || !portfolio.transactions || portfolio.transactions.length === 0) {
       logger.warn('PortfolioDetail', 'No portfolio or transactions available');
       setPerformanceData([]);
@@ -326,48 +324,10 @@ const PortfolioDetail = () => {
     } finally {
       setIsLoadingHistoricalData(false);
     }
-  };
-
-  // Get start and end dates based on time range
-  const getDateRangeForTimeRange = (range) => {
-    const endDate = new Date();
-    let startDate = new Date();
-    
-    // If portfolio has transactions, use the earliest transaction date as the start date for MAX
-    const sortedTransactions = portfolio && portfolio.transactions && Array.isArray(portfolio.transactions) && portfolio.transactions.length > 0
-      ? [...portfolio.transactions]
-          .filter(t => t && t.date)
-          .sort((a, b) => new Date(a.date) - new Date(b.date))
-      : [];
-      
-    const earliestTransactionDate = sortedTransactions.length > 0 
-      ? new Date(sortedTransactions[0].date)
-      : new Date();
-    
-    switch (range) {
-      case '1D':
-        startDate.setDate(startDate.getDate() - 1);
-        break;
-      case '1W':
-        startDate.setDate(startDate.getDate() - 7);
-        break;
-      case '1M':
-        startDate.setMonth(startDate.getMonth() - 1);
-        break;
-      case '1Y':
-        startDate.setFullYear(startDate.getFullYear() - 1);
-        break;
-      case 'MAX':
-      default:
-        startDate = new Date(earliestTransactionDate);
-        break;
-    }
-    
-    return { startDate, endDate };
-  };
+  }, [portfolio, getDateRangeForTimeRange]);
 
   // Function to calculate XIRR values for portfolio and securities
-  const calculateXirrValues = () => {
+  const calculateXirrValues = useCallback(() => {
     if (!portfolio || !portfolio.transactions || !portfolio.holdings) {
       logger.warn('PortfolioDetail', 'Cannot calculate XIRR: missing portfolio data');
       return;
@@ -494,7 +454,57 @@ const PortfolioDetail = () => {
     } finally {
       setIsCalculatingXirr(false);
     }
-  };
+  }, [portfolio]);
+  
+  // Debug logging for Chart.js registered scales
+  useEffect(() => {
+    logger.info('PortfolioDetail', 'Registered Chart.js scales:', {
+      scales: Object.keys(ChartJS.defaults.scales || {})
+    });
+    logger.info('PortfolioDetail', 'Chart.js version:', {
+      version: ChartJS.version
+    });
+  }, []);
+
+  useEffect(() => {
+    if (id) {
+      logger.info('PortfolioDetail', `Loading portfolio with ID: ${id}`);
+      getPortfolioById(id);
+    }
+  }, [id, getPortfolioById]);
+
+  useEffect(() => {
+    if (portfolio) {
+      logger.info('PortfolioDetail', 'Portfolio loaded, loading historical prices');
+      loadHistoricalPrices(timeRange);
+      calculateXirrValues();
+    }
+  }, [portfolio, timeRange, loadHistoricalPrices, calculateXirrValues]);
+  
+  // Cleanup chart instances when component unmounts or when tab changes
+  useEffect(() => {
+    return () => {
+      logger.info('PortfolioDetail', 'Cleaning up chart instances');
+      // Destroy all chart instances
+      const charts = [lineChartRef, pieChartRef, barChartRef, historyChartRef];
+      charts.forEach(chartRef => {
+        if (chartRef.current && chartRef.current.chartInstance) {
+          logger.info('PortfolioDetail', 'Destroying chart instance');
+          chartRef.current.chartInstance.destroy();
+        }
+      });
+    };
+  }, [selectedTab]);
+  
+  // Log whenever the chart is about to render
+  useEffect(() => {
+    if (performanceData && performanceData.length > 0) {
+      logger.info('PortfolioDetail', 'Performance chart about to render with data', {
+        count: performanceData.length,
+        timeRange
+      });
+    }
+  }, [performanceData, timeRange]);
 
   if (loading || isLoadingHistoricalData) {
     return (
@@ -575,12 +585,78 @@ const PortfolioDetail = () => {
       last: validData[validData.length - 1]
     });
 
+    // Ensure the last data point matches the current portfolio value in summary
+    if (validData.length > 0 && safePortfolio.totalValue) {
+      const lastDataPoint = validData[validData.length - 1];
+      const tolerance = 0.05; // 5% tolerance
+      const difference = Math.abs(lastDataPoint.value - safePortfolio.totalValue) / safePortfolio.totalValue;
+      
+      if (difference > tolerance) {
+        logger.info('PortfolioDetail', 'Correcting last data point to match summary value', {
+          lastChartValue: lastDataPoint.value,
+          summaryValue: safePortfolio.totalValue,
+          difference: difference * 100 + '%'
+        });
+        lastDataPoint.value = safePortfolio.totalValue;
+      }
+    }
+
     // Limit to maximum 100 data points to improve performance
     let dataToUse = validData;
     if (validData.length > 100) {
       const skipPoints = Math.floor(validData.length / 100);
       dataToUse = validData.filter((_, index) => index % skipPoints === 0 || index === validData.length - 1);
     }
+    
+    // Get the initial invested value
+    const initialInvestedValue = validData[0]?.value || 0;
+    
+    // Calculate cost basis for each point in time based on transactions
+    const costBasisData = [];
+    
+    if (Array.isArray(portfolio.transactions) && portfolio.transactions.length > 0) {
+      // Track cumulative investments over time
+      let cumulativeInvestment = initialInvestedValue;
+      
+      dataToUse.forEach((point, index) => {
+        const currentDate = new Date(point.date);
+        
+        // Count all buys up to this date
+        const investmentUpToDate = portfolio.transactions
+          .filter(tx => {
+            const txDate = new Date(tx.date);
+            return txDate <= currentDate && tx.action?.toUpperCase() === 'BUY';
+          })
+          .reduce((sum, tx) => sum + (tx.price * tx.quantity), 0);
+          
+        // Count all sells up to this date
+        const divestmentUpToDate = portfolio.transactions
+          .filter(tx => {
+            const txDate = new Date(tx.date);
+            return txDate <= currentDate && tx.action?.toUpperCase() === 'SELL';
+          })
+          .reduce((sum, tx) => sum + (tx.price * tx.quantity), 0);
+        
+        // Cost basis is buys minus sells
+        costBasisData.push(Math.max(0, investmentUpToDate - divestmentUpToDate));
+      });
+      
+      // Ensure cost basis never exceeds market value by unrealistic amounts
+      for (let i = 0; i < costBasisData.length; i++) {
+        // Cap cost basis at 150% of market value to avoid unrealistic scaling
+        costBasisData[i] = Math.min(costBasisData[i], dataToUse[i].value * 1.5);
+      }
+    } else {
+      // If no transaction data, use invested value from summary
+      dataToUse.forEach(() => {
+        costBasisData.push(safePortfolio.investedValue || 0);
+      });
+    }
+    
+    logger.debug('PortfolioDetail', 'Generated cost basis data', {
+      first: costBasisData[0],
+      last: costBasisData[costBasisData.length - 1]
+    });
 
     return {
       labels: dataToUse.map(point => point.date), // Use string dates instead of Date objects
@@ -594,6 +670,17 @@ const PortfolioDetail = () => {
           fill: true,
           pointRadius: 0,
           borderWidth: 2
+        },
+        {
+          label: 'Cost Basis',
+          data: costBasisData,
+          borderColor: 'rgba(153, 102, 255, 0.8)',
+          backgroundColor: 'rgba(153, 102, 255, 0.1)',
+          tension: 0.1,
+          fill: true,
+          pointRadius: 0,
+          borderWidth: 1.5,
+          borderDash: [5, 5]
         }
       ]
     };
@@ -649,6 +736,14 @@ const PortfolioDetail = () => {
     const labels = topHoldings.map(holding => holding.symbol || 'Unknown');
     const marketValues = topHoldings.map(holding => holding.currentValue || 0);
     const costValues = topHoldings.map(holding => holding.costBasis || 0);
+    
+    const maxValue = Math.max(...marketValues);
+    
+    logger.debug('PortfolioDetail', 'Holdings chart data', {
+      maxValue,
+      topHolding: labels[0],
+      topValue: marketValues[0]
+    });
 
     return {
       labels,
@@ -725,10 +820,10 @@ const PortfolioDetail = () => {
           label: function(context) {
             if (context && context.raw) {
               try {
-                return `Value: ₹${context.raw.toLocaleString('en-IN', { maximumFractionDigits: 2 })}`;
+                return `${context.dataset.label}: ₹${context.raw.toLocaleString('en-IN', { maximumFractionDigits: 2 })}`;
               } catch (error) {
                 logger.error('PortfolioDetail', 'Error formatting tooltip value', error);
-                return `Value: ₹${context.raw}`;
+                return `${context.dataset.label}: ₹${context.raw}`;
               }
             }
             return '';
@@ -764,6 +859,26 @@ const PortfolioDetail = () => {
     }
   };
 
+  // Create holdings chart options with better scaling
+  const holdingsChartOptions = {
+    ...chartOptions,
+    scales: {
+      ...chartOptions.scales,
+      y: {
+        ...chartOptions.scales.y,
+        // Scale to make top holding use 90% of chart height
+        suggestedMax: function(context) {
+          if (context.chart && context.chart.data && context.chart.data.datasets && context.chart.data.datasets.length > 0) {
+            const data = context.chart.data.datasets[0].data;
+            const maxValue = Math.max(...data);
+            return maxValue * 1.1; // 110% of max value
+          }
+          return null;
+        }
+      }
+    }
+  };
+
   const pieChartOptions = {
     responsive: true,
     maintainAspectRatio: false,
@@ -772,6 +887,29 @@ const PortfolioDetail = () => {
         position: 'right',
       },
     },
+  };
+
+  // Create chart options for the history chart
+  const historyChartOptions = {
+    ...chartOptions,
+    scales: {
+      ...chartOptions.scales,
+      y: {
+        ...chartOptions.scales.y,
+        // Scale to make highest value use 90% of chart height
+        suggestedMax: function(context) {
+          if (context.chart && context.chart.data && context.chart.data.datasets && context.chart.data.datasets.length > 0) {
+            const data = context.chart.data.datasets[0].data;
+            const maxValue = Math.max(...data);
+            return maxValue * 1.1; // 110% of max value
+          }
+          return null;
+        }
+      },
+      x: {
+        type: 'category'
+      }
+    }
   };
 
   // Helper function to safely render holdings
@@ -905,16 +1043,6 @@ const PortfolioDetail = () => {
     return null;
   };
 
-  // Log whenever the chart is about to render
-  useEffect(() => {
-    if (performanceData && performanceData.length > 0) {
-      logger.info('PortfolioDetail', 'Performance chart about to render with data', {
-        count: performanceData.length,
-        timeRange
-      });
-    }
-  }, [performanceData, timeRange]);
-
   return (
     <Container className="py-4">
       <div className="d-flex justify-content-between align-items-center mb-4">
@@ -989,25 +1117,19 @@ const PortfolioDetail = () => {
                         <span className="visually-hidden">Loading performance data...</span>
                       </Spinner>
                     </div>
-                  ) : performanceData && Array.isArray(performanceData) && performanceData.length > 0 ? (
+                  ) : performanceChartData ? (
                     <div style={{ height: '300px', maxHeight: '300px' }}>
-                      {performanceChartData ? (
-                        <Line
-                          data={performanceChartData}
-                          options={chartOptions}
-                          height={300}
-                          ref={lineChartRef}
-                          key={`line-${selectedTab}-${timeRange}`}
-                        />
-                      ) : (
-                        <div className="text-center py-4">
-                          <p className="text-muted">Could not prepare chart data.</p>
-                        </div>
-                      )}
+                      <Line
+                        data={performanceChartData}
+                        options={chartOptions}
+                        height={300}
+                        ref={lineChartRef}
+                        key={`line-${selectedTab}-${timeRange}`}
+                      />
                     </div>
                   ) : (
                     <div className="text-center py-4">
-                      <p className="text-muted">No performance data available for the selected time range.</p>
+                      <p className="text-muted">Could not prepare chart data.</p>
                     </div>
                   )}
                 </Card.Body>
@@ -1092,7 +1214,7 @@ const PortfolioDetail = () => {
                     <div style={{ height: '300px', maxHeight: '300px' }}>
                       <Bar 
                         data={holdingsChartData} 
-                        options={{...chartOptions, scales: {...chartOptions.scales, x: {type: 'category'}}}}
+                        options={holdingsChartOptions}
                         ref={barChartRef}
                         key={`bar-${selectedTab}`}
                       />
@@ -1283,7 +1405,7 @@ const PortfolioDetail = () => {
                     <div style={{ height: '300px', maxHeight: '300px' }}>
                       <Bar 
                         data={historyChartData} 
-                        options={{...chartOptions, scales: {...chartOptions.scales, x: {type: 'category'}}}}
+                        options={historyChartOptions}
                         ref={historyChartRef}
                         key={`history-${selectedTab}`}
                       />
