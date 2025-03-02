@@ -89,6 +89,10 @@ const PortfolioDetail = () => {
   const barChartRef = useRef(null);
   const historyChartRef = useRef(null);
   
+  // In the PortfolioDetail component, add new state variables for sorting
+  const [sortField, setSortField] = useState('currentValue');
+  const [sortDirection, setSortDirection] = useState('desc');
+  
   // Get start and end dates based on time range
   const getDateRangeForTimeRange = useCallback((range) => {
     const endDate = new Date();
@@ -912,7 +916,7 @@ const PortfolioDetail = () => {
     }
   };
 
-  // Helper function to safely render holdings
+  // Helper function to safely render holdings with improved calculation for fully exited positions and sorting
   const getSafeHoldings = () => {
     if (!safePortfolio.holdings || !Array.isArray(safePortfolio.holdings)) {
       return [];
@@ -923,18 +927,15 @@ const PortfolioDetail = () => {
       // Make a copy of the holding to avoid modifying the original
       const enhancedHolding = { ...holding };
       
-      // Calculate cost basis if not present
-      if (!enhancedHolding.costBasis || enhancedHolding.costBasis === 0) {
-        // Cost basis = quantity * avgCostPrice
-        enhancedHolding.costBasis = enhancedHolding.quantity * enhancedHolding.avgCostPrice;
-      }
-      
-      // Calculate realized P/L if not present
-      if (!enhancedHolding.realizedPL || enhancedHolding.realizedPL === 0) {
-        // Try to calculate realized P/L from transactions
+      // For fully exited positions, recalculate from transactions history
+      if (enhancedHolding.fullyExited || enhancedHolding.quantity === 0) {
+        // Mark as fully exited
+        enhancedHolding.fullyExited = true;
+        
         if (safePortfolio.transactions && Array.isArray(safePortfolio.transactions)) {
           const symbol = enhancedHolding.symbol;
           let buyValue = 0;
+          let buyQuantity = 0;
           let sellValue = 0;
           let soldQuantity = 0;
           
@@ -952,50 +953,251 @@ const PortfolioDetail = () => {
             
             if (action === 'BUY') {
               buyValue += value;
+              buyQuantity += quantity;
             } else if (action === 'SELL') {
               sellValue += value;
               soldQuantity += quantity;
             }
           });
           
-          // Calculate realized P/L if any shares were sold
-          if (soldQuantity > 0) {
-            // Average cost for sold shares
-            const avgCost = buyValue / (enhancedHolding.quantity + soldQuantity);
-            const costOfSoldShares = avgCost * soldQuantity;
-            enhancedHolding.realizedPL = sellValue - costOfSoldShares;
+          // Check if all shares were sold
+          if (soldQuantity >= buyQuantity && buyQuantity > 0) {
+            // Update cost basis to the total amount invested
+            enhancedHolding.costBasis = buyValue;
+            
+            // Realized P/L is total sell value minus total buy value
+            enhancedHolding.realizedPL = sellValue - buyValue;
+            
+            // Set unrealized to 0 as position is closed
+            enhancedHolding.unrealizedPL = 0;
+            enhancedHolding.unrealizedPLPercent = 0;
+            
+            // Total P/L is just realized P/L for closed positions
+            enhancedHolding.totalPL = enhancedHolding.realizedPL;
+            
+            // Calculate total P/L percentage based on cost basis
+            if (enhancedHolding.costBasis > 0) {
+              enhancedHolding.totalPLPercent = (enhancedHolding.totalPL / enhancedHolding.costBasis) * 100;
+            }
+          }
+        }
+      } else {
+        // Calculate cost basis if not present
+        if (!enhancedHolding.costBasis || enhancedHolding.costBasis === 0) {
+          // Cost basis = quantity * avgCostPrice
+          enhancedHolding.costBasis = enhancedHolding.quantity * enhancedHolding.avgCostPrice;
+        }
+        
+        // Calculate realized P/L if not present
+        if (!enhancedHolding.realizedPL || enhancedHolding.realizedPL === 0) {
+          // Try to calculate realized P/L from transactions
+          if (safePortfolio.transactions && Array.isArray(safePortfolio.transactions)) {
+            const symbol = enhancedHolding.symbol;
+            let buyValue = 0;
+            let sellValue = 0;
+            let soldQuantity = 0;
+            
+            // Get all transactions for this symbol
+            const symbolTransactions = safePortfolio.transactions.filter(tx => 
+              tx.symbol === symbol
+            );
+            
+            // Calculate buy and sell values
+            symbolTransactions.forEach(tx => {
+              const action = (tx.action || '').toUpperCase();
+              const quantity = parseFloat(tx.quantity) || 0;
+              const price = parseFloat(tx.price) || 0;
+              const value = quantity * price;
+              
+              if (action === 'BUY') {
+                buyValue += value;
+              } else if (action === 'SELL') {
+                sellValue += value;
+                soldQuantity += quantity;
+              }
+            });
+            
+            // Calculate realized P/L if any shares were sold
+            if (soldQuantity > 0) {
+              // Average cost for sold shares
+              const avgCost = buyValue / (enhancedHolding.quantity + soldQuantity);
+              const costOfSoldShares = avgCost * soldQuantity;
+              enhancedHolding.realizedPL = sellValue - costOfSoldShares;
+            }
+          }
+        }
+        
+        // Calculate total P/L and percentage if not present
+        if (!enhancedHolding.totalPL || enhancedHolding.totalPL === 0) {
+          // Total P/L = Unrealized P/L + Realized P/L
+          enhancedHolding.totalPL = (enhancedHolding.unrealizedPL || 0) + (enhancedHolding.realizedPL || 0);
+          
+          // Calculate total P/L percentage
+          if (enhancedHolding.costBasis > 0) {
+            enhancedHolding.totalPLPercent = (enhancedHolding.totalPL / enhancedHolding.costBasis) * 100;
+          } else {
+            enhancedHolding.totalPLPercent = 0;
           }
         }
       }
       
-      // Calculate total P/L and percentage if not present
-      if (!enhancedHolding.totalPL || enhancedHolding.totalPL === 0) {
-        // Total P/L = Unrealized P/L + Realized P/L
-        enhancedHolding.totalPL = (enhancedHolding.unrealizedPL || 0) + (enhancedHolding.realizedPL || 0);
+      // Calculate impact score (XIRR * weighted holding period)
+      enhancedHolding.impactScore = 0;
+      
+      if (safePortfolio.transactions && Array.isArray(safePortfolio.transactions) && securitiesXirr[enhancedHolding.symbol]) {
+        const symbol = enhancedHolding.symbol;
+        const xirr = securitiesXirr[symbol] || 0;
         
-        // Calculate total P/L percentage
-        if (enhancedHolding.costBasis > 0) {
-          enhancedHolding.totalPLPercent = (enhancedHolding.totalPL / enhancedHolding.costBasis) * 100;
-        } else {
-          enhancedHolding.totalPLPercent = 0;
+        // Get all transactions for this symbol
+        const symbolTransactions = safePortfolio.transactions.filter(tx => 
+          tx.symbol === symbol && (tx.action || '').toUpperCase() === 'BUY'
+        );
+        
+        if (symbolTransactions.length > 0) {
+          // Calculate weighted average holding period
+          let totalWeightedDays = 0;
+          let totalInvestment = 0;
+          
+          symbolTransactions.forEach(tx => {
+            const txDate = new Date(tx.date);
+            const today = new Date();
+            const daysHeld = Math.max(0, Math.round((today - txDate) / (1000 * 60 * 60 * 24)));
+            
+            const quantity = parseFloat(tx.quantity) || 0;
+            const price = parseFloat(tx.price) || 0;
+            const investment = quantity * price;
+            
+            totalWeightedDays += daysHeld * investment;
+            totalInvestment += investment;
+          });
+          
+          // Calculate weighted average holding period in years
+          const avgHoldingPeriodDays = totalInvestment > 0 ? totalWeightedDays / totalInvestment : 0;
+          const avgHoldingPeriodYears = avgHoldingPeriodDays / 365;
+          
+          // Impact score = XIRR * holding period in years
+          enhancedHolding.impactScore = xirr * avgHoldingPeriodYears;
+          enhancedHolding.holdingPeriodYears = avgHoldingPeriodYears;
         }
       }
       
       return enhancedHolding;
     });
     
-    return enhancedHoldings
+    // Apply sorting
+    const sortedHoldings = enhancedHoldings
       .filter(holding => holding && (typeof holding.currentValue === 'number' || holding.fullyExited))
       .sort((a, b) => {
-        // Sort by fully exited first (exited holdings at bottom)
-        if (a.fullyExited && !b.fullyExited) return 1;
-        if (!a.fullyExited && b.fullyExited) return -1;
+        // Get the values to compare based on sortField
+        let aValue, bValue;
         
-        // Then sort by market value (for active holdings) or realized PL (for exited holdings)
-        const aValue = a.fullyExited ? a.realizedPL || 0 : a.currentValue || 0;
-        const bValue = b.fullyExited ? b.realizedPL || 0 : b.currentValue || 0;
-        return bValue - aValue;
+        switch(sortField) {
+          case 'symbol':
+          case 'companyName':
+            aValue = a[sortField] || '';
+            bValue = b[sortField] || '';
+            return sortDirection === 'asc' ? 
+              aValue.localeCompare(bValue) : 
+              bValue.localeCompare(aValue);
+          
+          case 'quantity':
+            aValue = parseFloat(a.quantity) || 0;
+            bValue = parseFloat(b.quantity) || 0;
+            break;
+            
+          case 'avgCostPrice':
+            aValue = parseFloat(a.avgCostPrice) || 0;
+            bValue = parseFloat(b.avgCostPrice) || 0;
+            break;
+            
+          case 'currentPrice':
+            aValue = parseFloat(a.currentPrice) || 0;
+            bValue = parseFloat(b.currentPrice) || 0;
+            break;
+            
+          case 'costBasis':
+            aValue = parseFloat(a.costBasis) || 0;
+            bValue = parseFloat(b.costBasis) || 0;
+            break;
+            
+          case 'currentValue':
+            aValue = a.fullyExited ? -999999 : (parseFloat(a.currentValue) || 0); // Put exited holdings at the bottom
+            bValue = b.fullyExited ? -999999 : (parseFloat(b.currentValue) || 0);
+            break;
+            
+          case 'unrealizedPL':
+            aValue = parseFloat(a.unrealizedPL) || 0;
+            bValue = parseFloat(b.unrealizedPL) || 0;
+            break;
+            
+          case 'unrealizedPLPercent':
+            aValue = parseFloat(a.unrealizedPLPercent) || 0;
+            bValue = parseFloat(b.unrealizedPLPercent) || 0;
+            break;
+            
+          case 'realizedPL':
+            aValue = parseFloat(a.realizedPL) || 0;
+            bValue = parseFloat(b.realizedPL) || 0;
+            break;
+            
+          case 'totalPL':
+            aValue = parseFloat(a.totalPL) || 0;
+            bValue = parseFloat(b.totalPL) || 0;
+            break;
+            
+          case 'totalPLPercent':
+            aValue = parseFloat(a.totalPLPercent) || 0;
+            bValue = parseFloat(b.totalPLPercent) || 0;
+            break;
+            
+          case 'xirr':
+            aValue = securitiesXirr[a.symbol] || 0;
+            bValue = securitiesXirr[b.symbol] || 0;
+            break;
+            
+          case 'impactScore':
+            aValue = a.impactScore || 0;
+            bValue = b.impactScore || 0;
+            break;
+            
+          default:
+            // Default to sorting by current value
+            aValue = a.fullyExited ? -999999 : (parseFloat(a.currentValue) || 0);
+            bValue = b.fullyExited ? -999999 : (parseFloat(b.currentValue) || 0);
+        }
+        
+        // Compare numerically
+        return sortDirection === 'asc' ? aValue - bValue : bValue - aValue;
       });
+    
+    return sortedHoldings;
+  };
+
+  // Helper function to handle column header click for sorting
+  const handleSortClick = (field) => {
+    // If clicking the same field, toggle direction
+    if (field === sortField) {
+      setSortDirection(sortDirection === 'asc' ? 'desc' : 'asc');
+    } else {
+      // New field, set to desc by default
+      setSortField(field);
+      setSortDirection('desc');
+    }
+  };
+
+  // Helper function to render sortable column header
+  const renderSortableHeader = (field, label) => {
+    return (
+      <th 
+        onClick={() => handleSortClick(field)}
+        style={{ cursor: 'pointer' }}
+        className={sortField === field ? 'bg-light' : ''}
+      >
+        {label} {sortField === field && (
+          <span>{sortDirection === 'asc' ? '▲' : '▼'}</span>
+        )}
+      </th>
+    );
   };
 
   // Helper function to safely render transactions
@@ -1304,18 +1506,19 @@ const PortfolioDetail = () => {
                     <Table striped hover>
                       <thead>
                         <tr>
-                          <th>Symbol</th>
-                          <th>Company</th>
-                          <th>Quantity</th>
-                          <th>Avg. Cost</th>
-                          <th>Current Price</th>
-                          <th>Cost Basis</th>
-                          <th>Market Value</th>
-                          <th>Gain/Loss</th>
-                          <th>Gain/Loss %</th>
-                          <th>Realized P/L</th>
-                          <th>Total P/L</th>
-                          <th>XIRR</th>
+                          {renderSortableHeader('symbol', 'Symbol')}
+                          {renderSortableHeader('companyName', 'Company')}
+                          {renderSortableHeader('quantity', 'Quantity')}
+                          {renderSortableHeader('avgCostPrice', 'Avg. Cost')}
+                          {renderSortableHeader('currentPrice', 'Current Price')}
+                          {renderSortableHeader('costBasis', 'Cost Basis')}
+                          {renderSortableHeader('currentValue', 'Market Value')}
+                          {renderSortableHeader('unrealizedPL', 'Gain/Loss')}
+                          {renderSortableHeader('unrealizedPLPercent', 'Gain/Loss %')}
+                          {renderSortableHeader('realizedPL', 'Realized P/L')}
+                          {renderSortableHeader('totalPL', 'Total P/L')}
+                          {renderSortableHeader('xirr', 'XIRR')}
+                          {renderSortableHeader('impactScore', 'Impact Score')}
                         </tr>
                       </thead>
                       <tbody>
@@ -1351,6 +1554,10 @@ const PortfolioDetail = () => {
                                   formatXirr(securitiesXirr[holding.symbol])
                                 )}
                               </td>
+                              <td className={Math.sign(holding.impactScore || 0) >= 0 ? 'text-success' : 'text-danger'}>
+                                {holding.impactScore ? (holding.impactScore * 100).toFixed(2) : 'N/A'}
+                                {holding.holdingPeriodYears ? ` (${holding.holdingPeriodYears.toFixed(1)}y)` : ''}
+                              </td>
                             </tr>
                           ))}
                       </tbody>
@@ -1369,18 +1576,19 @@ const PortfolioDetail = () => {
                 <Table striped hover>
                   <thead>
                     <tr>
-                      <th>Symbol</th>
-                      <th>Company</th>
-                      <th>Quantity</th>
-                      <th>Avg. Cost</th>
-                      <th>Current Price</th>
-                      <th>Cost Basis</th>
-                      <th>Market Value</th>
-                      <th>Gain/Loss</th>
-                      <th>Gain/Loss %</th>
-                      <th>Realized P/L</th>
-                      <th>Total P/L</th>
-                      <th>XIRR</th>
+                      {renderSortableHeader('symbol', 'Symbol')}
+                      {renderSortableHeader('companyName', 'Company')}
+                      {renderSortableHeader('quantity', 'Quantity')}
+                      {renderSortableHeader('avgCostPrice', 'Avg. Cost')}
+                      {renderSortableHeader('currentPrice', 'Current Price')}
+                      {renderSortableHeader('costBasis', 'Cost Basis')}
+                      {renderSortableHeader('currentValue', 'Market Value')}
+                      {renderSortableHeader('unrealizedPL', 'Gain/Loss')}
+                      {renderSortableHeader('unrealizedPLPercent', 'Gain/Loss %')}
+                      {renderSortableHeader('realizedPL', 'Realized P/L')}
+                      {renderSortableHeader('totalPL', 'Total P/L')}
+                      {renderSortableHeader('xirr', 'XIRR')}
+                      {renderSortableHeader('impactScore', 'Impact Score')}
                     </tr>
                   </thead>
                   <tbody>
@@ -1405,8 +1613,6 @@ const PortfolioDetail = () => {
                           </td>
                           <td className={(holding.totalPL || 0) >= 0 ? 'text-success' : 'text-danger'}>
                             ₹{(holding.totalPL || 0).toLocaleString('en-IN', { maximumFractionDigits: 2 })}
-                            {' '}
-                            ({(holding.totalPLPercent || 0).toFixed(2)}%)
                           </td>
                           <td className={securitiesXirr[holding.symbol] >= 0 ? 'text-success' : 'text-danger'}>
                             {isCalculatingXirr ? (
@@ -1414,6 +1620,10 @@ const PortfolioDetail = () => {
                             ) : (
                               formatXirr(securitiesXirr[holding.symbol])
                             )}
+                          </td>
+                          <td className={Math.sign(holding.impactScore || 0) >= 0 ? 'text-success' : 'text-danger'}>
+                            {holding.impactScore ? (holding.impactScore * 100).toFixed(2) : 'N/A'}
+                            {holding.holdingPeriodYears ? ` (${holding.holdingPeriodYears.toFixed(1)}y)` : ''}
                           </td>
                         </tr>
                       ))}
