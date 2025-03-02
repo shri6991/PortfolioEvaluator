@@ -918,7 +918,73 @@ const PortfolioDetail = () => {
       return [];
     }
     
-    return safePortfolio.holdings
+    // Calculate additional data for each holding if missing
+    const enhancedHoldings = safePortfolio.holdings.map(holding => {
+      // Make a copy of the holding to avoid modifying the original
+      const enhancedHolding = { ...holding };
+      
+      // Calculate cost basis if not present
+      if (!enhancedHolding.costBasis || enhancedHolding.costBasis === 0) {
+        // Cost basis = quantity * avgCostPrice
+        enhancedHolding.costBasis = enhancedHolding.quantity * enhancedHolding.avgCostPrice;
+      }
+      
+      // Calculate realized P/L if not present
+      if (!enhancedHolding.realizedPL || enhancedHolding.realizedPL === 0) {
+        // Try to calculate realized P/L from transactions
+        if (safePortfolio.transactions && Array.isArray(safePortfolio.transactions)) {
+          const symbol = enhancedHolding.symbol;
+          let buyValue = 0;
+          let sellValue = 0;
+          let soldQuantity = 0;
+          
+          // Get all transactions for this symbol
+          const symbolTransactions = safePortfolio.transactions.filter(tx => 
+            tx.symbol === symbol
+          );
+          
+          // Calculate buy and sell values
+          symbolTransactions.forEach(tx => {
+            const action = (tx.action || '').toUpperCase();
+            const quantity = parseFloat(tx.quantity) || 0;
+            const price = parseFloat(tx.price) || 0;
+            const value = quantity * price;
+            
+            if (action === 'BUY') {
+              buyValue += value;
+            } else if (action === 'SELL') {
+              sellValue += value;
+              soldQuantity += quantity;
+            }
+          });
+          
+          // Calculate realized P/L if any shares were sold
+          if (soldQuantity > 0) {
+            // Average cost for sold shares
+            const avgCost = buyValue / (enhancedHolding.quantity + soldQuantity);
+            const costOfSoldShares = avgCost * soldQuantity;
+            enhancedHolding.realizedPL = sellValue - costOfSoldShares;
+          }
+        }
+      }
+      
+      // Calculate total P/L and percentage if not present
+      if (!enhancedHolding.totalPL || enhancedHolding.totalPL === 0) {
+        // Total P/L = Unrealized P/L + Realized P/L
+        enhancedHolding.totalPL = (enhancedHolding.unrealizedPL || 0) + (enhancedHolding.realizedPL || 0);
+        
+        // Calculate total P/L percentage
+        if (enhancedHolding.costBasis > 0) {
+          enhancedHolding.totalPLPercent = (enhancedHolding.totalPL / enhancedHolding.costBasis) * 100;
+        } else {
+          enhancedHolding.totalPLPercent = 0;
+        }
+      }
+      
+      return enhancedHolding;
+    });
+    
+    return enhancedHoldings
       .filter(holding => holding && (typeof holding.currentValue === 'number' || holding.fullyExited))
       .sort((a, b) => {
         // Sort by fully exited first (exited holdings at bottom)
@@ -1243,6 +1309,7 @@ const PortfolioDetail = () => {
                           <th>Quantity</th>
                           <th>Avg. Cost</th>
                           <th>Current Price</th>
+                          <th>Cost Basis</th>
                           <th>Market Value</th>
                           <th>Gain/Loss</th>
                           <th>Gain/Loss %</th>
@@ -1261,6 +1328,7 @@ const PortfolioDetail = () => {
                               <td>{holding.quantity || 0}{holding.fullyExited && ' (Sold)'}</td>
                               <td>₹{(holding.avgCostPrice || 0).toFixed(2)}</td>
                               <td>₹{(holding.currentPrice || 0).toFixed(2)}</td>
+                              <td>₹{(holding.costBasis || 0).toLocaleString('en-IN', { maximumFractionDigits: 2 })}</td>
                               <td>₹{(holding.currentValue || 0).toLocaleString('en-IN', { maximumFractionDigits: 2 })}</td>
                               <td className={(holding.unrealizedPL || 0) >= 0 ? 'text-success' : 'text-danger'}>
                                 ₹{(holding.unrealizedPL || 0).toLocaleString('en-IN', { maximumFractionDigits: 2 })}
