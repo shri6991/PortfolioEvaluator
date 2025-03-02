@@ -18,6 +18,9 @@ const formatPercentage = (value) => {
 const Dashboard = () => {
   const { portfolio, showSummaryPrompt, dismissSummaryPrompt } = usePortfolio();
 
+  // Debug log to see portfolio structure
+  console.log('Dashboard portfolio data:', portfolio);
+
   // Sort holdings by market value (descending)
   const getTopHoldings = () => {
     if (!portfolio || !portfolio.holdings || portfolio.holdings.length === 0) {
@@ -76,8 +79,8 @@ const Dashboard = () => {
                   <Col md={6}>
                     <div className="mb-3">
                       <h6>Unrealized Return</h6>
-                      <h3 className={portfolio.unrealizedReturn >= 0 ? 'text-success' : 'text-danger'}>
-                        {formatPercentage(portfolio.unrealizedReturn)}
+                      <h3 className={portfolio.totalGainLossPercentage >= 0 ? 'text-success' : 'text-danger'}>
+                        {formatPercentage(portfolio.totalGainLossPercentage)}
                       </h3>
                     </div>
                     <div className="mb-3">

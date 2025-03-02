@@ -319,13 +319,22 @@ const PortfolioDetail = () => {
         holdingsCount: portfolio.holdings.length
       });
       
+      // Log sample transaction for debugging
+      if (portfolio.transactions.length > 0) {
+        const sampleTx = portfolio.transactions[0];
+        logger.debug('PortfolioDetail', 'Sample transaction:', {
+          sample: JSON.stringify(sampleTx),
+          keys: Object.keys(sampleTx)
+        });
+      }
+      
       // Prepare transactions for XIRR calculation
       const transactions = portfolio.transactions
         .filter(tx => {
           // Validate transaction data
-          if (!tx.transactionDate || !tx.price || !tx.quantity || !tx.symbol) {
+          if (!tx.date || !tx.price || !tx.quantity || !tx.symbol) {
             logger.warn('PortfolioDetail', 'Invalid transaction data:', {
-              date: tx.transactionDate,
+              date: tx.date, 
               price: tx.price,
               quantity: tx.quantity,
               symbol: tx.symbol
@@ -335,14 +344,34 @@ const PortfolioDetail = () => {
           return true;
         })
         .map(tx => {
-          const date = new Date(tx.transactionDate);
-          const amount = tx.transactionType === 'BUY' ? -tx.price * tx.quantity : tx.price * tx.quantity;
+          // Ensure date is a proper Date object
+          let date;
+          try {
+            date = new Date(tx.date);
+            if (isNaN(date.getTime())) {
+              logger.warn('PortfolioDetail', 'Invalid date format:', {
+                originalDate: tx.date,
+                parsedDate: date
+              });
+              return null;
+            }
+          } catch (error) {
+            logger.warn('PortfolioDetail', 'Error parsing date:', {
+              date: tx.date,
+              error: error.message
+            });
+            return null;
+          }
+          
+          // Determine transaction type and calculate amount
+          const isBuy = tx.action?.toUpperCase() === 'BUY' || tx.transactionType?.toUpperCase() === 'BUY';
+          const amount = isBuy ? -tx.price * tx.quantity : tx.price * tx.quantity;
           
           logger.debug('PortfolioDetail', 'Processing transaction:', {
             symbol: tx.symbol,
             date: date.toISOString(),
             amount: amount,
-            type: tx.transactionType
+            type: tx.action || tx.transactionType
           });
           
           return {
@@ -350,7 +379,8 @@ const PortfolioDetail = () => {
             date,
             symbol: tx.symbol
           };
-        });
+        })
+        .filter(tx => tx !== null); // Remove any transactions with invalid dates
 
       logger.info('PortfolioDetail', `Processed ${transactions.length} valid transactions`);
 

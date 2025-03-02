@@ -40,15 +40,28 @@ class XirrService {
         holdingsCount: currentHoldings.length
       });
 
+      // Log sample transaction for debugging
+      if (transactions.length > 0) {
+        const sampleTx = transactions[0];
+        logger.debug('XirrService', 'Sample transaction:', {
+          sample: JSON.stringify(sampleTx),
+          keys: Object.keys(sampleTx),
+          dateFields: Object.keys(sampleTx).filter(k => k.toLowerCase().includes('date'))
+        });
+      }
+
       // Filter out invalid transactions
       const validTransactions = transactions.filter(tx => {
-        if (!tx.amount || !tx.date || isNaN(tx.amount) || !(tx.date instanceof Date) || isNaN(tx.date.getTime())) {
+        // Check if date is valid
+        const isValidDate = tx.date && (tx.date instanceof Date || !isNaN(new Date(tx.date).getTime()));
+        
+        if (!tx.amount || !isValidDate || isNaN(tx.amount)) {
           logger.warn('XirrService', 'Invalid transaction found:', {
             amount: tx.amount,
             date: tx.date,
             symbol: tx.symbol,
-            isValidDate: tx.date instanceof Date,
-            dateTime: tx.date ? tx.date.getTime() : null
+            isValidDate: isValidDate,
+            dateValue: tx.date ? String(tx.date) : 'undefined'
           });
           return false;
         }
