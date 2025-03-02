@@ -314,31 +314,87 @@ const PortfolioDetail = () => {
       setIsCalculatingXirr(true);
       setXirrError('');
 
-      logger.info('PortfolioDetail', 'Calculating XIRR values');
+      logger.info('PortfolioDetail', 'Starting XIRR calculation', {
+        transactionsCount: portfolio.transactions.length,
+        holdingsCount: portfolio.holdings.length
+      });
       
       // Prepare transactions for XIRR calculation
-      const transactions = portfolio.transactions.map(tx => ({
-        amount: tx.transactionType === 'BUY' ? -tx.price * tx.quantity : tx.price * tx.quantity,
-        date: new Date(tx.transactionDate),
-        symbol: tx.symbol
-      }));
+      const transactions = portfolio.transactions
+        .filter(tx => {
+          // Validate transaction data
+          if (!tx.transactionDate || !tx.price || !tx.quantity || !tx.symbol) {
+            logger.warn('PortfolioDetail', 'Invalid transaction data:', {
+              date: tx.transactionDate,
+              price: tx.price,
+              quantity: tx.quantity,
+              symbol: tx.symbol
+            });
+            return false;
+          }
+          return true;
+        })
+        .map(tx => {
+          const date = new Date(tx.transactionDate);
+          const amount = tx.transactionType === 'BUY' ? -tx.price * tx.quantity : tx.price * tx.quantity;
+          
+          logger.debug('PortfolioDetail', 'Processing transaction:', {
+            symbol: tx.symbol,
+            date: date.toISOString(),
+            amount: amount,
+            type: tx.transactionType
+          });
+          
+          return {
+            amount,
+            date,
+            symbol: tx.symbol
+          };
+        });
+
+      logger.info('PortfolioDetail', `Processed ${transactions.length} valid transactions`);
 
       // Prepare current holdings for XIRR calculation
-      const currentHoldings = portfolio.holdings.map(holding => ({
-        symbol: holding.symbol,
-        currentValue: holding.currentValue || (holding.currentPrice * holding.quantity)
-      }));
+      const currentHoldings = portfolio.holdings
+        .filter(holding => {
+          // Validate holding data
+          if (!holding.symbol || !holding.currentPrice || !holding.quantity) {
+            logger.warn('PortfolioDetail', 'Invalid holding data:', {
+              symbol: holding.symbol,
+              currentPrice: holding.currentPrice,
+              quantity: holding.quantity
+            });
+            return false;
+          }
+          return true;
+        })
+        .map(holding => {
+          const currentValue = holding.currentValue || (holding.currentPrice * holding.quantity);
+          
+          logger.debug('PortfolioDetail', 'Processing holding:', {
+            symbol: holding.symbol,
+            currentValue: currentValue
+          });
+          
+          return {
+            symbol: holding.symbol,
+            currentValue
+          };
+        });
+
+      logger.info('PortfolioDetail', `Processed ${currentHoldings.length} valid holdings`);
 
       // Calculate XIRR values
       const xirrResults = xirrService.calculatePortfolioXirr(transactions, currentHoldings);
       
+      logger.info('PortfolioDetail', 'XIRR calculation results:', {
+        portfolioXirr: xirrResults.portfolioXirr,
+        securitiesCount: Object.keys(xirrResults.securitiesXirr).length,
+        securitiesXirr: xirrResults.securitiesXirr
+      });
+      
       setPortfolioXirr(xirrResults.portfolioXirr);
       setSecuritiesXirr(xirrResults.securitiesXirr);
-      
-      logger.info('PortfolioDetail', 'XIRR calculation completed', {
-        portfolioXirr: xirrResults.portfolioXirr,
-        securitiesCount: Object.keys(xirrResults.securitiesXirr).length
-      });
     } catch (error) {
       logger.error('PortfolioDetail', 'Error calculating XIRR', error);
       setXirrError(`Failed to calculate XIRR: ${error.message}`);

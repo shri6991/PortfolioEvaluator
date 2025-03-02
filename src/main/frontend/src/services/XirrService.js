@@ -35,10 +35,21 @@ class XirrService {
         return { portfolioXirr: 0, securitiesXirr: {} };
       }
 
+      logger.info('XirrService', 'Starting portfolio XIRR calculation', {
+        transactionsCount: transactions.length,
+        holdingsCount: currentHoldings.length
+      });
+
       // Filter out invalid transactions
       const validTransactions = transactions.filter(tx => {
-        if (!tx.amount || !tx.date || isNaN(tx.amount)) {
-          logger.warn('XirrService', 'Invalid transaction found:', tx);
+        if (!tx.amount || !tx.date || isNaN(tx.amount) || !(tx.date instanceof Date) || isNaN(tx.date.getTime())) {
+          logger.warn('XirrService', 'Invalid transaction found:', {
+            amount: tx.amount,
+            date: tx.date,
+            symbol: tx.symbol,
+            isValidDate: tx.date instanceof Date,
+            dateTime: tx.date ? tx.date.getTime() : null
+          });
           return false;
         }
         return true;
@@ -48,6 +59,8 @@ class XirrService {
         logger.warn('XirrService', 'No valid transactions found');
         return { portfolioXirr: 0, securitiesXirr: {} };
       }
+
+      logger.info('XirrService', `Found ${validTransactions.length} valid transactions`);
 
       // Group transactions by security
       const transactionsBySymbol = this.groupTransactionsBySymbol(validTransactions);
@@ -59,6 +72,12 @@ class XirrService {
         currentHoldings, 
         today
       );
+
+      logger.debug('XirrService', 'Combined cash flows:', {
+        totalCashFlows: cashFlowsWithCurrentValues.length,
+        firstDate: cashFlowsWithCurrentValues[0]?.date,
+        lastDate: cashFlowsWithCurrentValues[cashFlowsWithCurrentValues.length - 1]?.date
+      });
 
       // Validate combined cash flows
       if (cashFlowsWithCurrentValues.length < 2) {
@@ -74,6 +93,13 @@ class XirrService {
       const totalCurrentValue = currentHoldings
         .reduce((sum, holding) => sum + (holding.currentValue || 0), 0);
 
+      logger.info('XirrService', 'Portfolio totals:', {
+        totalInvested,
+        totalCurrentValue,
+        absoluteReturn: totalCurrentValue - totalInvested,
+        percentageReturn: ((totalCurrentValue - totalInvested) / totalInvested * 100).toFixed(2) + '%'
+      });
+
       if (totalInvested === 0 || totalCurrentValue === 0) {
         logger.warn('XirrService', 'Invalid investment amounts detected');
         return { portfolioXirr: 0, securitiesXirr: {} };
@@ -83,6 +109,10 @@ class XirrService {
       let portfolioXirr = 0;
       try {
         portfolioXirr = this.calculateXirr(cashFlowsWithCurrentValues);
+        logger.info('XirrService', 'Portfolio XIRR calculated:', {
+          xirr: portfolioXirr,
+          xirrPercentage: (portfolioXirr * 100).toFixed(2) + '%'
+        });
       } catch (error) {
         logger.error('XirrService', 'Error calculating portfolio XIRR:', error);
       }
@@ -108,6 +138,11 @@ class XirrService {
           // Calculate XIRR for this security
           try {
             securitiesXirr[symbol] = this.calculateXirr(securityCashFlows);
+            logger.debug('XirrService', `XIRR calculated for ${symbol}:`, {
+              xirr: securitiesXirr[symbol],
+              xirrPercentage: (securitiesXirr[symbol] * 100).toFixed(2) + '%',
+              cashFlowsCount: securityCashFlows.length
+            });
           } catch (error) {
             logger.error('XirrService', `Error calculating XIRR for ${symbol}:`, error);
             securitiesXirr[symbol] = 0;
@@ -116,12 +151,23 @@ class XirrService {
           // If the security is not currently held, XIRR is based only on past transactions
           try {
             securitiesXirr[symbol] = this.calculateXirr(securityTransactions);
+            logger.debug('XirrService', `XIRR calculated for ${symbol} (not currently held):`, {
+              xirr: securitiesXirr[symbol],
+              xirrPercentage: (securitiesXirr[symbol] * 100).toFixed(2) + '%',
+              cashFlowsCount: securityTransactions.length
+            });
           } catch (error) {
             logger.error('XirrService', `Error calculating XIRR for ${symbol}:`, error);
             securitiesXirr[symbol] = 0;
           }
         }
       }
+      
+      logger.info('XirrService', 'XIRR calculation completed', {
+        portfolioXirr,
+        securitiesCount: Object.keys(securitiesXirr).length,
+        averageSecurityXirr: Object.values(securitiesXirr).reduce((a, b) => a + b, 0) / Object.keys(securitiesXirr).length
+      });
       
       return {
         portfolioXirr,
