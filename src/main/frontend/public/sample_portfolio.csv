@@ -1,0 +1,13 @@
+Date,Ticker,Quantity,Price,Type,Fees,Sector
+2024-01-15,AAPL,10,172.50,BUY,5.99,Technology
+2024-01-20,MSFT,5,300.25,BUY,5.99,Technology
+2024-01-25,AMZN,8,165.30,BUY,5.99,Consumer Cyclical
+2024-02-01,GOOGL,12,123.40,BUY,5.99,Communication Services
+2024-02-05,TSLA,6,225.80,BUY,5.99,Consumer Cyclical
+2024-02-10,NVDA,15,450.25,BUY,5.99,Technology
+2024-02-15,JPM,8,145.30,BUY,5.99,Financial Services
+2024-02-20,JNJ,7,158.90,BUY,5.99,Healthcare
+2024-02-25,VZ,20,52.40,BUY,5.99,Communication Services
+2024-03-01,PG,9,140.25,BUY,5.99,Consumer Defensive
+2024-03-05,DIS,10,110.80,BUY,5.99,Communication Services
+2024-03-10,KO,25,58.30,BUY,5.99,Consumer Defensive 
