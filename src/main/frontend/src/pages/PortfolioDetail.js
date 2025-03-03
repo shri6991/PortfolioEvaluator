@@ -1063,37 +1063,57 @@ const PortfolioDetail = () => {
         
         // Get all transactions for this symbol
         const symbolTransactions = safePortfolio.transactions.filter(tx => 
-          tx.symbol === symbol && (tx.action || '').toUpperCase() === 'BUY'
+          tx.symbol === symbol
         );
         
         if (symbolTransactions.length > 0) {
-          // Calculate weighted average holding period
-          let totalWeightedDays = 0;
+          // Find buy and sell transactions
+          const buyTransactions = symbolTransactions.filter(tx => (tx.action || '').toUpperCase() === 'BUY');
+          const sellTransactions = symbolTransactions.filter(tx => (tx.action || '').toUpperCase() === 'SELL');
+          
+          // Determine reference date - latest sell date or current date if holdings are non-zero
+          let referenceDate = new Date(); // Default to current date
+          
+          // If all holdings were sold (quantity is zero), use the last sell date
+          if (enhancedHolding.quantity === 0 && sellTransactions.length > 0) {
+            // Find the latest sell transaction
+            const lastSellTx = sellTransactions.reduce((latest, tx) => {
+              const txDate = new Date(tx.date);
+              return latest === null || txDate > new Date(latest.date) ? tx : latest;
+            }, null);
+            
+            if (lastSellTx) {
+              referenceDate = new Date(lastSellTx.date);
+            }
+          }
+          
+          // Calculate weighted holding period according to the formula:
+          // SUM(buy qty * amount * delta from final sell date or current date) / SUM(buy qty * amount)
+          let totalWeightedTimeValue = 0;
           let totalInvestment = 0;
           
-          symbolTransactions.forEach(tx => {
+          buyTransactions.forEach(tx => {
             const txDate = new Date(tx.date);
-            const today = new Date();
-            const daysHeld = Math.max(0, Math.round((today - txDate) / (1000 * 60 * 60 * 24)));
+            const daysDelta = Math.max(0, Math.round((referenceDate - txDate) / (1000 * 60 * 60 * 24)));
             
             const quantity = parseFloat(tx.quantity) || 0;
             const price = parseFloat(tx.price) || 0;
             const investment = quantity * price;
             
-            totalWeightedDays += daysHeld * investment;
+            totalWeightedTimeValue += quantity * price * daysDelta;
             totalInvestment += investment;
           });
           
           // Calculate weighted average holding period in years
-          const avgHoldingPeriodDays = totalInvestment > 0 ? totalWeightedDays / totalInvestment : 0;
-          const avgHoldingPeriodYears = avgHoldingPeriodDays / 365;
+          const weightedHoldingPeriodDays = totalInvestment > 0 ? totalWeightedTimeValue / totalInvestment : 0;
+          const weightedHoldingPeriodYears = weightedHoldingPeriodDays / 365;
           
           // Calculate allocation (position size as percentage of total portfolio)
           const allocation = totalPortfolioCostBasis > 0 ? enhancedHolding.costBasis / totalPortfolioCostBasis : 0;
           
-          // Impact score = Allocation × XIRR × holding period in years
-          enhancedHolding.impactScore = allocation * xirr * avgHoldingPeriodYears;
-          enhancedHolding.holdingPeriodYears = avgHoldingPeriodYears;
+          // Impact score = holding period * allocation * XIRR
+          enhancedHolding.impactScore = weightedHoldingPeriodYears * allocation * xirr;
+          enhancedHolding.holdingPeriodYears = weightedHoldingPeriodYears;
           enhancedHolding.allocation = allocation;
         }
       }
