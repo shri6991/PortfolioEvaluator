@@ -922,6 +922,19 @@ const PortfolioDetail = () => {
       return [];
     }
     
+    // Calculate total cost basis across all holdings for allocation calculation
+    let totalPortfolioCostBasis = 0;
+    safePortfolio.holdings.forEach(holding => {
+      const costBasis = parseFloat(holding.costBasis) || 
+                        (parseFloat(holding.quantity || 0) * parseFloat(holding.avgCostPrice || 0));
+      totalPortfolioCostBasis += costBasis;
+    });
+    
+    // Use investedValue as fallback if costBasis calculation is zero
+    if (totalPortfolioCostBasis === 0 && safePortfolio.investedValue) {
+      totalPortfolioCostBasis = safePortfolio.investedValue;
+    }
+    
     // Calculate additional data for each holding if missing
     const enhancedHoldings = safePortfolio.holdings.map(holding => {
       // Make a copy of the holding to avoid modifying the original
@@ -1041,7 +1054,7 @@ const PortfolioDetail = () => {
         }
       }
       
-      // Calculate impact score (XIRR * weighted holding period)
+      // Calculate impact score (Allocation × XIRR × weighted holding period)
       enhancedHolding.impactScore = 0;
       
       if (safePortfolio.transactions && Array.isArray(safePortfolio.transactions) && securitiesXirr[enhancedHolding.symbol]) {
@@ -1075,9 +1088,13 @@ const PortfolioDetail = () => {
           const avgHoldingPeriodDays = totalInvestment > 0 ? totalWeightedDays / totalInvestment : 0;
           const avgHoldingPeriodYears = avgHoldingPeriodDays / 365;
           
-          // Impact score = XIRR * holding period in years
-          enhancedHolding.impactScore = xirr * avgHoldingPeriodYears;
+          // Calculate allocation (position size as percentage of total portfolio)
+          const allocation = totalPortfolioCostBasis > 0 ? enhancedHolding.costBasis / totalPortfolioCostBasis : 0;
+          
+          // Impact score = Allocation × XIRR × holding period in years
+          enhancedHolding.impactScore = allocation * xirr * avgHoldingPeriodYears;
           enhancedHolding.holdingPeriodYears = avgHoldingPeriodYears;
+          enhancedHolding.allocation = allocation;
         }
       }
       
@@ -1158,6 +1175,11 @@ const PortfolioDetail = () => {
           case 'impactScore':
             aValue = a.impactScore || 0;
             bValue = b.impactScore || 0;
+            break;
+            
+          case 'allocation':
+            aValue = a.allocation || 0;
+            bValue = b.allocation || 0;
             break;
             
           default:
@@ -1517,6 +1539,7 @@ const PortfolioDetail = () => {
                           {renderSortableHeader('unrealizedPLPercent', 'Gain/Loss %')}
                           {renderSortableHeader('realizedPL', 'Realized P/L')}
                           {renderSortableHeader('totalPL', 'Total P/L')}
+                          {renderSortableHeader('allocation', 'Allocation')}
                           {renderSortableHeader('xirr', 'XIRR')}
                           {renderSortableHeader('impactScore', 'Impact Score')}
                         </tr>
@@ -1544,19 +1567,15 @@ const PortfolioDetail = () => {
                               </td>
                               <td className={(holding.totalPL || 0) >= 0 ? 'text-success' : 'text-danger'}>
                                 ₹{(holding.totalPL || 0).toLocaleString('en-IN', { maximumFractionDigits: 2 })}
-                                {' '}
-                                ({(holding.totalPLPercent || 0).toFixed(2)}%)
                               </td>
-                              <td className={securitiesXirr[holding.symbol] >= 0 ? 'text-success' : 'text-danger'}>
-                                {isCalculatingXirr ? (
-                                  <Spinner animation="border" size="sm" />
-                                ) : (
-                                  formatXirr(securitiesXirr[holding.symbol])
-                                )}
+                              <td className={Math.sign(holding.allocation || 0) >= 0 ? 'text-dark' : 'text-dark'}>
+                                {holding.allocation ? (holding.allocation * 100).toFixed(2) + '%' : 'N/A'}
+                              </td>
+                              <td className={Math.sign(securitiesXirr[holding.symbol] || 0) >= 0 ? 'text-success' : 'text-danger'}>
+                                {securitiesXirr[holding.symbol] ? (securitiesXirr[holding.symbol] * 100).toFixed(2) + '%' : 'N/A'}
                               </td>
                               <td className={Math.sign(holding.impactScore || 0) >= 0 ? 'text-success' : 'text-danger'}>
-                                {holding.impactScore ? (holding.impactScore * 100).toFixed(2) : 'N/A'}
-                                {holding.holdingPeriodYears ? ` (${holding.holdingPeriodYears.toFixed(1)}y)` : ''}
+                                {holding.impactScore ? (holding.impactScore * 100).toFixed(2) + (holding.holdingPeriodYears ? ` (${holding.holdingPeriodYears.toFixed(1)}y)` : '') : 'N/A'}
                               </td>
                             </tr>
                           ))}
@@ -1587,6 +1606,7 @@ const PortfolioDetail = () => {
                       {renderSortableHeader('unrealizedPLPercent', 'Gain/Loss %')}
                       {renderSortableHeader('realizedPL', 'Realized P/L')}
                       {renderSortableHeader('totalPL', 'Total P/L')}
+                      {renderSortableHeader('allocation', 'Allocation')}
                       {renderSortableHeader('xirr', 'XIRR')}
                       {renderSortableHeader('impactScore', 'Impact Score')}
                     </tr>
@@ -1614,16 +1634,14 @@ const PortfolioDetail = () => {
                           <td className={(holding.totalPL || 0) >= 0 ? 'text-success' : 'text-danger'}>
                             ₹{(holding.totalPL || 0).toLocaleString('en-IN', { maximumFractionDigits: 2 })}
                           </td>
-                          <td className={securitiesXirr[holding.symbol] >= 0 ? 'text-success' : 'text-danger'}>
-                            {isCalculatingXirr ? (
-                              <Spinner animation="border" size="sm" />
-                            ) : (
-                              formatXirr(securitiesXirr[holding.symbol])
-                            )}
+                          <td className={Math.sign(holding.allocation || 0) >= 0 ? 'text-dark' : 'text-dark'}>
+                            {holding.allocation ? (holding.allocation * 100).toFixed(2) + '%' : 'N/A'}
+                          </td>
+                          <td className={Math.sign(securitiesXirr[holding.symbol] || 0) >= 0 ? 'text-success' : 'text-danger'}>
+                            {securitiesXirr[holding.symbol] ? (securitiesXirr[holding.symbol] * 100).toFixed(2) + '%' : 'N/A'}
                           </td>
                           <td className={Math.sign(holding.impactScore || 0) >= 0 ? 'text-success' : 'text-danger'}>
-                            {holding.impactScore ? (holding.impactScore * 100).toFixed(2) : 'N/A'}
-                            {holding.holdingPeriodYears ? ` (${holding.holdingPeriodYears.toFixed(1)}y)` : ''}
+                            {holding.impactScore ? (holding.impactScore * 100).toFixed(2) + (holding.holdingPeriodYears ? ` (${holding.holdingPeriodYears.toFixed(1)}y)` : '') : 'N/A'}
                           </td>
                         </tr>
                       ))}
